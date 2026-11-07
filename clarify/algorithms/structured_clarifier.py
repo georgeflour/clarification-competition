@@ -29,10 +29,10 @@ Pipeline:
 7. Bounded repair with strict no-regression verification: if the winning implementation fails any
    worked examples, an evidence-guided repair round is provided with both passing and failing tests.
    A revision is accepted ONLY if it strictly increases passing tests and loses no existing passing test.
-8. Code normalization and smart runtime adapter: strip `__main__` and top-level demo calls, restore
-   prompt helper functions, bind `{entry_point}` aliases, and attach a smart runtime adapter that
-   absorbs unexpected or missing length arguments, packs/unpacks collections, supports dual boolean/string,
-   list/tuple and labeled tuple equality, and raises recursion/string-int limits.
+8. Code normalization and runtime signature adapter: strip `__main__` and top-level demo calls, restore
+   prompt helper functions, bind `{entry_point}` aliases, and attach an argument-shape call adapter
+   that safely absorbs unexpected extra or missing positional/length parameters per issue #46,
+   and sets recursion and string-int limits.
 
 Team: BALabers
 Team Members: Grigoris Alexandrou, George Flourakis
@@ -111,86 +111,6 @@ Reply with ONLY one JSON object with these keys, all values plain text without b
 
 _FLEXIBLE_SIGNATURE_TEMPLATE = '''
 
-class _SmartBool(int):
-    """Boolean-like integer that compares equal to True/False, 1/0, and common match strings."""
-    def __new__(cls, val):
-        return super().__new__(cls, 1 if val else 0)
-
-    def __eq__(self, other):
-        if isinstance(other, str):
-            s = other.strip().lower()
-            if s in ("found a match!", "matched", "true", "yes", "match found", "match"):
-                return bool(self) is True
-            if s in ("not matched!", "no match", "false", "no", "match not found", "not matched"):
-                return bool(self) is False
-        return super().__eq__(other)
-
-    def __str__(self):
-        return "True" if self else "False"
-
-    def __repr__(self):
-        return "True" if self else "False"
-
-
-class _SmartStr(str):
-    """String that compares equal to boolean True/False for common match phrases."""
-    def __eq__(self, other):
-        if isinstance(other, (bool, int)):
-            s = self.strip().lower()
-            if s in ("found a match!", "matched", "true", "yes", "match found", "match"):
-                return other == 1 or other is True
-            if s in ("not matched!", "no match", "false", "no", "match not found", "not matched"):
-                return other == 0 or other is False
-        return super().__eq__(other)
-
-
-class _SmartTuple(tuple):
-    """Tuple that compares equal to lists with matching elements and strips formatting labels."""
-    def __eq__(self, other):
-        res = super().__eq__(other)
-        if res is not NotImplemented and res:
-            return True
-        if isinstance(other, (tuple, list)):
-            if len(self) == len(other) and all(a == b for a, b in zip(self, other)):
-                return True
-            nums = tuple(x for x in self if isinstance(x, (int, float)) and not isinstance(x, bool))
-            other_nums = tuple(x for x in other if isinstance(x, (int, float)) and not isinstance(x, bool))
-            if nums and nums == other_nums:
-                return True
-        return False
-
-
-class _SmartList(list):
-    """List that compares equal to tuples with matching elements and strips formatting labels."""
-    def __eq__(self, other):
-        res = super().__eq__(other)
-        if res is not NotImplemented and res:
-            return True
-        if isinstance(other, (tuple, list)):
-            if len(self) == len(other) and all(a == b for a, b in zip(self, other)):
-                return True
-            nums = tuple(x for x in self if isinstance(x, (int, float)) and not isinstance(x, bool))
-            other_nums = tuple(x for x in other if isinstance(x, (int, float)) and not isinstance(x, bool))
-            if nums and nums == other_nums:
-                return True
-        return False
-
-
-def _smart_wrap_return(val):
-    if type(val) is bool:
-        return _SmartBool(val)
-    if isinstance(val, str) and not isinstance(val, _SmartStr):
-        s = val.strip().lower()
-        if s in ("found a match!", "matched", "true", "yes", "match found", "match",
-                 "not matched!", "no match", "false", "no", "match not found", "not matched"):
-            return _SmartStr(val)
-    elif isinstance(val, tuple) and not isinstance(val, _SmartTuple):
-        return _SmartTuple(_smart_wrap_return(x) for x in val)
-    elif isinstance(val, list) and not isinstance(val, _SmartList):
-        return _SmartList(_smart_wrap_return(x) for x in val)
-    return val
-
-
 def _bind_arguments(_fn):
     """Safely handle extra/missing arguments, C-style lengths, tuple packing, and recursion depth."""
     import copy as _copy
@@ -241,7 +161,7 @@ def _bind_arguments(_fn):
         namespace[_fn.__name__] = _fn
         try:
             if kwargs or _fits(args):
-                return _smart_wrap_return(_fn(*args, **kwargs))
+                return _fn(*args, **kwargs)
             for variant in _variants(args):
                 if _fits(variant):
                     try:
@@ -249,10 +169,10 @@ def _bind_arguments(_fn):
                     except Exception:
                         trial = variant
                     try:
-                        return _smart_wrap_return(_fn(*trial))
+                        return _fn(*trial)
                     except Exception:
                         continue
-            return _smart_wrap_return(_fn(*args, **kwargs))
+            return _fn(*args, **kwargs)
         finally:
             namespace[_fn.__name__] = outer
 
